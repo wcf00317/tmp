@@ -14,7 +14,7 @@ class MathSolver(Node):
         self.llm = LLMRegistry.get(llm_name)
         self.prompt_set = PromptSetRegistry.get(domain)
         self.role = self.prompt_set.get_role() if role is None else role
-        self.constraint = self.prompt_set.get_constraint(self.role) 
+        self.constraint = self.prompt_set.get_constraint(self.role)
         
     def _process_inputs(self, raw_inputs:Dict[str,str], spatial_info:Dict[str,Dict], temporal_info:Dict[str,Dict], **kwargs)->List[Any]:
         """ To be overriden by the descendant class """

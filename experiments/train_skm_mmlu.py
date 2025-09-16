@@ -196,8 +196,19 @@ def main():
 
                 # Assume single-agent selection as in original code (uses first item of batch)
                 agent_id = action.item() if hasattr(action, 'item') else int(action)
-                agent_to_call = agent_registry.get(agent_list[agent_id])
-                # Pass choices to the agent run method
+                print(agent_id)
+                agent_name = agent_list[agent_id]
+                print(agent_name)
+                agent_config = config.get('agents', {}).get(agent_name, {})
+
+                # 从代理配置中提取 llm_name 和 domain (prompt_set)
+                llm_name = agent_config.get('llm', {}).get('model_name', "")
+                domain = agent_config.get('prompt_set', "")
+
+                # 使用正确的参数获取代理实例
+                agent_to_call = agent_registry.get(agent_name, domain=domain, llm_name=llm_name)
+                # print(agent_to_call)
+
                 raw_output = agent_to_call.run(question=question[0], **{"choices": choices[0]})
 
                 with torch.no_grad():

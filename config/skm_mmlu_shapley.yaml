@@ -10,27 +10,23 @@ agents:
   MathSolver:
     llm:
       model_name: qwen-max
-    prompt_set: mmlu_math_solver_prompt
+    prompt_set: mmlu
   CodeWriter:
     llm:
       model_name: qwen-max
-    prompt_set: mmlu_code_writing_prompt
-  TextAnalyzer:
-    llm:
-      model_name: qwen-max
-    prompt_set: mmlu_text_analyzer_prompt
+    prompt_set: mmlu
   AdversarialAgent:
     llm:
       model_name: qwen-max
-    prompt_set: mmlu_adversarial_prompt
+    prompt_set: mmlu
   AnalyzeAgent:
     llm:
       model_name: qwen-max
-    prompt_set: mmlu_analyze_prompt
-  FinalDecisionAgent:
+    prompt_set: mmlu
+  FinalMajorVote:
     llm:
       model_name: qwen-max
-    prompt_set: mmlu_final_decision_prompt
+    prompt_set: mmlu
 
 # --- NEW: Training and Model Hyperparameters ---
 training_params:
