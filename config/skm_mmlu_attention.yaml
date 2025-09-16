@@ -1,0 +1,59 @@
+# config/skm_mmlu_attention.yaml
+# Configuration for SKM-Net with Implicit Attention Graph (Direction 5)
+
+# --- Dataset and Embedding ---
+dataset_path: ./datasets/MMLU/mmlu.json
+embedding_model: sentence-transformers/all-MiniLM-L6-v2
+
+# --- Agent Definitions (Copied from mmlu.yaml) ---
+agents:
+  MathSolver:
+    llm:
+      model_name: qwen-max
+    prompt_set: mmlu_math_solver_prompt
+  CodeWriter:
+    llm:
+      model_name: qwen-max
+    prompt_set: mmlu_code_writing_prompt
+  TextAnalyzer:
+    llm:
+      model_name: qwen-max
+    prompt_set: mmlu_text_analyzer_prompt
+  AdversarialAgent:
+    llm:
+      model_name: qwen-max
+    prompt_set: mmlu_adversarial_prompt
+  AnalyzeAgent:
+    llm:
+      model_name: qwen-max
+    prompt_set: mmlu_analyze_prompt
+  FinalDecisionAgent:
+    llm:
+      model_name: qwen-max
+    prompt_set: mmlu_final_decision_prompt
+
+# --- NEW: Training and Model Hyperparameters ---
+training_params:
+  # --- Core SKM-Net Parameters ---
+  graph_mode: implicit_attention
+  state_dim: 128
+  message_dim: 128
+
+  # --- Learning Rates ---
+  lr_actor: 0.00005 # Attention models might prefer smaller LR for the actor
+  lr_critic: 0.001
+  lr_gateway: 0.001
+
+  # --- RL & IB Parameters ---
+  gamma: 0.99
+  beta: 0.0001 # IB loss weight might need tuning for attention mode
+
+  # --- Shapley Graph Evolution Parameters (Not used in this mode) ---
+  credit_alpha: 0.1
+
+  # --- Training Process Parameters ---
+  max_reasoning_steps: 5
+  epochs: 20
+  batch_size: 1
+  seed: 42
+  save_path: checkpoints/skm_manager_attention.pth
