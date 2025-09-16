@@ -9,8 +9,8 @@ from GDesigner.prompt.prompt_set_registry import PromptSetRegistry
 from GDesigner.tools.search.wiki import search_wiki_main
 
 
-@AgentRegistry.register('AdverarialAgent')
-class AdverarialAgent(Node):
+@AgentRegistry.register('AdversarialAgent')
+class AdversarialAgent(Node):
     def __init__(self, id: str | None =None, role:str = None,  domain: str = "", llm_name: str = "",):
         super().__init__(id, "AdverarialAgent" ,domain, llm_name)
         self.llm = LLMRegistry.get(llm_name)

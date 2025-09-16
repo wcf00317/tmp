@@ -11,7 +11,8 @@ import numpy as np
 from tqdm import tqdm
 import logging
 from sentence_transformers import SentenceTransformer  # Correctly import the necessary library
-
+from typing import List
+import pandas as pd
 # Ensure GDesigner modules can be correctly imported
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -97,7 +98,7 @@ def main():
     dataset_path = args.dataset_path or config.get('dataset_path') or './data'
     embedding_model_name = args.embedding_model or config.get('embedding_model') or 'sentence-transformers/all-MiniLM-L6-v2'
     save_path = args.save_path or config.get('save_path') or './checkpoints/manager.pth'
-    graph_mode = args.graph_mode if args.graph_mode is not None else config.get('graph_mode', False)
+    graph_mode = args.graph_mode if args.graph_mode is not None else config.get('graph_mode', 'shapley_evolution')
     credit_alpha = args.credit_alpha if args.credit_alpha is not None else config.get('credit_alpha', 0.5)
 
     # Optional seed
@@ -150,12 +151,30 @@ def main():
     ])
 
     logging.info(f"Loading MMLU dataset from base path: {dataset_path}")
-    dataset_dev = MMLUDataset(split='dev', file_path=dataset_path)
-    dataset_val = MMLUDataset(split='val', file_path=dataset_path)
+    dataset_dev = MMLUDataset(split='dev')
+    dataset_val = MMLUDataset(split='val')
     dataset = torch.utils.data.ConcatDataset([dataset_dev, dataset_val])
     logging.info(f"Successfully loaded dataset with {len(dataset)} samples.")
 
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=params['batch_size'], shuffle=True)
+    def mmlu_collate_fn(batch: List[pd.Series]):
+        """
+        Collates a list of pandas Series from MMLUDataset into a batch of lists.
+        """
+        questions = [item['question'] for item in batch]
+        # 将每个样本的ABCD选项组合成一个列表
+        choices = [[item['A'], item['B'], item['C'], item['D']] for item in batch]
+        answers = [item['correct_answer'] for item in batch]
+
+        # 返回三个列表，分别对应 question, choices, 和 answer
+        return questions, choices, answers
+
+    # 2. 在 DataLoader 中使用这个自定义函数
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=params['batch_size'],
+        shuffle=True,
+        collate_fn=mmlu_collate_fn  # 关键改动在这里
+    )
 
     # --- 2. Training Loop ---
     for epoch in range(params['epochs']):
@@ -177,7 +196,7 @@ def main():
 
                 # Assume single-agent selection as in original code (uses first item of batch)
                 agent_id = action.item() if hasattr(action, 'item') else int(action)
-                agent_to_call = agent_registry.get_agent(agent_list[agent_id])
+                agent_to_call = agent_registry.get(agent_list[agent_id])
                 # Pass choices to the agent run method
                 raw_output = agent_to_call.run(question=question[0], **{"choices": choices[0]})
 
