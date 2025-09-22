@@ -1,4 +1,5 @@
 # experiments/train_skm_mmlu.py (fixed args/config handling)
+import asyncio
 
 import torch
 import torch.optim as optim
@@ -24,6 +25,59 @@ from GDesigner.manager.manager import Manager  # Our new Manager
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+import json
+import hashlib
+
+# --- Caching Implementation ---
+CACHE_FILE = 'api_response_cache.json'
+API_CACHE = {}
+
+def load_cache():
+    """从文件加载API响应缓存"""
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, 'r') as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                print("Cache file exists but load error!")
+                return {}
+    return {}
+
+def save_cache():
+    """将API响应缓存保存到文件"""
+    with open(CACHE_FILE, 'w') as f:
+        json.dump(API_CACHE, f, indent=4)
+
+def get_cache_key(text: str) -> str:
+    """为给定的文本字符串创建一个唯一的MD5哈希值"""
+    return hashlib.md5(text.encode()).hexdigest()
+
+# 在脚本开始时加载缓存
+API_CACHE = load_cache()
+
+
+async def cached_async_execute(agent_to_call, input_dict, spatial_info, temporal_info):
+    """
+    一个包装了 _async_execute 的函数，它会根据任务字符串缓存结果。
+    """
+    task_string = input_dict.get("task", "")
+    cache_key = get_cache_key(task_string)
+
+    if cache_key in API_CACHE:
+        # 返回缓存的响应
+        return API_CACHE[cache_key]
+    else:
+        # 调用实际的API并缓存结果
+        response = await agent_to_call._async_execute(
+            input=input_dict,
+            spatial_info=spatial_info,
+            temporal_info=temporal_info
+        )
+        API_CACHE[cache_key] = response
+        # 每次新的API调用后都保存缓存，以防中断造成数据丢失
+        save_cache()
+        return response
 
 
 # --- Local Utility Function (as per original repo style) ---
@@ -177,91 +231,136 @@ def main():
     )
 
     # --- 2. Training Loop ---
+    # --- 2. Training Loop ---
     for epoch in range(params['epochs']):
         total_epoch_loss = 0.0
         total_epoch_reward = 0.0
+        epoch_correct_predictions = 0
+        epoch_total_questions = 0
 
-        for i, (question, choices, answer) in enumerate(tqdm(dataloader, desc=f"Epoch {epoch + 1}/{params['epochs']}")):
+        for i, (questions, choices_list, answers) in enumerate(
+                tqdm(dataloader, desc=f"Epoch {epoch + 1}/{params['epochs']}")):
 
-            # Initialize state for the new question
-            # Keep original behavior: use configured batch_size as the state first dimension
-            state = torch.zeros(params['batch_size'], params['state_dim']).to(device)
-            messages, log_probs, q_values, advantages, ib_losses, rewards = {}, [], [], [], [], []
-
-            # Multi-step reasoning process for a single question
-            for step in range(params['max_reasoning_steps']):
-                action_dist = manager.actor(state)
-                action = action_dist.sample()
-                log_prob = action_dist.log_prob(action)
-
-                # Assume single-agent selection as in original code (uses first item of batch)
-                agent_id = action.item() if hasattr(action, 'item') else int(action)
-                print(agent_id)
-                agent_name = agent_list[agent_id]
-                print(agent_name)
-                agent_config = config.get('agents', {}).get(agent_name, {})
-
-                # 从代理配置中提取 llm_name 和 domain (prompt_set)
-                llm_name = agent_config.get('llm', {}).get('model_name', "")
-                domain = agent_config.get('prompt_set', "")
-
-                # 使用正确的参数获取代理实例
-                agent_to_call = agent_registry.get(agent_name, domain=domain, llm_name=llm_name)
-                # print(agent_to_call)
-
-                raw_output = agent_to_call.run(question=question[0], **{"choices": choices[0]})
-
-                with torch.no_grad():
-                    # Ensure raw_output is a string for the encoder
-                    raw_output_str = str(raw_output) if raw_output is not None else ""
-                    raw_output_embedding = embedding_model.encode(raw_output_str, convert_to_tensor=True)
-                    raw_output_embedding = raw_output_embedding.float().to(device)
-
-                message, ib_loss = manager.gateways[str(agent_id)](raw_output_embedding)
-                messages[agent_id] = message
-
-                advantage, q_factual = manager.compute_advantage(state, messages, action)
-                manager.update_credit_graph(agent_id, advantage)
-
-                log_probs.append(log_prob)
-                q_values.append(q_factual)
-                advantages.append(advantage)
-                ib_losses.append(ib_loss)
-                rewards.append(0)  # Intermediate steps have no reward
-
-                # Detach to prevent gradients from flowing through multiple unrolls of the state
-                state = state_updater(message.detach(), state.detach())
-
-            # Calculate final reward based on the final answer
-            final_reward = 1.0 if answer[0] in str(raw_output) else -1.0
-            rewards[-1] = final_reward
-            total_epoch_reward += final_reward
-
-            # Calculate returns for the Critic (Monte Carlo returns)
-            returns = []
-            R = 0
-            for r in reversed(rewards):
-                R = r + params['gamma'] * R
-                returns.insert(0, R)
-            returns = torch.tensor(returns, dtype=torch.float32).to(device).unsqueeze(1)
-
-            # Calculate losses
-            actor_loss = -(torch.stack(log_probs) * torch.stack(advantages).detach()).mean()
-            critic_loss = F.smooth_l1_loss(torch.stack(q_values), returns)
-            total_ib_loss = torch.stack(ib_losses).mean()
-
-            total_loss = actor_loss + critic_loss + params['beta'] * total_ib_loss
-            total_epoch_loss += total_loss.item()
-
-            # Optimization step
             optimizer.zero_grad()
-            total_loss.backward()
-            optimizer.step()
+
+            batch_loss = 0.0
+            batch_reward = 0.0
+
+            # --- Loop through each item in the batch ---
+            for j in range(len(questions)):
+                question = questions[j]
+                choices = choices_list[j]
+                answer = answers[j]
+
+                # Initialize state for the new question
+                state = torch.zeros(1, params['state_dim']).to(device)  # State for a single item
+                messages, log_probs, q_values, advantages, ib_losses, rewards = {}, [], [], [], [], []
+
+                raw_output = None  # Ensure raw_output is defined
+
+                # Multi-step reasoning process for a single question
+                for step in range(params['max_reasoning_steps']):
+                    action_dist = manager.actor(state)
+                    action = action_dist.sample()
+                    log_prob = action_dist.log_prob(action)
+
+                    agent_id = action.item()  # action is now a single value
+                    agent_name = agent_list[agent_id]
+                    agent_config = config.get('agents', {}).get(agent_name, {})
+
+                    llm_name = agent_config.get('llm', {}).get('model_name', "")
+                    domain = agent_config.get('prompt_set', "")
+
+                    agent_to_call = agent_registry.get(agent_name, domain=domain, llm_name=llm_name)
+
+                    task_string = (
+                        f"{question}\n\n"
+                        f"Choices:\n"
+                        f"A. {choices[0]}\n"
+                        f"B. {choices[1]}\n"
+                        f"C. {choices[2]}\n"
+                        f"D. {choices[3]}"
+                    )
+                    input_dict = {"task": task_string}
+
+                    raw_output = asyncio.run(cached_async_execute(
+                        agent_to_call,
+                        input_dict=input_dict,
+                        spatial_info={},
+                        temporal_info={}
+                    ))
+
+                    with torch.no_grad():
+                        raw_output_str = str(raw_output) if raw_output is not None else ""
+                        raw_output_embedding = embedding_model.encode(raw_output_str, convert_to_tensor=True)
+                        raw_output_embedding = raw_output_embedding.float().to(device).unsqueeze(
+                            0)  # Add batch dimension
+
+                    message_input = raw_output_embedding.clone()
+                    message, ib_loss = manager.gateways[str(agent_id)](message_input)
+
+                    messages[agent_id] = message
+                    advantage, q_factual = manager.compute_advantage(state, messages, action)
+                    manager.update_credit_graph(agent_id, advantage)
+
+                    log_probs.append(log_prob)
+                    q_values.append(q_factual)
+                    advantages.append(advantage)
+                    ib_losses.append(ib_loss)
+                    rewards.append(0)
+
+                    state = state_updater(message.detach(), state.detach())
+
+                # Calculate final reward for this item
+                final_reward = 1.0 if answer in str(raw_output) else -1.0
+                rewards[-1] = final_reward
+                batch_reward += final_reward
+                is_correct = (final_reward == 1.0)
+                if is_correct:
+                    epoch_correct_predictions += 1
+                epoch_total_questions += 1
+
+                # (可选) 如果你想看每一道题的结果，取消下面这几行的注释
+                print(f"\n--- Question {epoch_total_questions}  : {'CORRECT' if is_correct else 'WRONG'}---")
+                # print(f"Result: {'CORRECT' if is_correct else 'WRONG'}")
+                # print(f"----------------\n")
+                # Calculate returns for this item
+                returns = []
+                R = 0
+                for r in reversed(rewards):
+                    R = r + params['gamma'] * R
+                    returns.insert(0, R)
+                returns = torch.tensor(returns, dtype=torch.float32).to(device).unsqueeze(1)
+
+                # Calculate losses for this item
+                actor_loss = -(torch.stack(log_probs) * torch.stack(advantages).detach()).mean()
+                critic_loss = F.smooth_l1_loss(torch.stack(q_values), returns)
+                total_ib_loss = torch.stack(ib_losses).mean()
+
+                total_loss_for_item = actor_loss + critic_loss + params['beta'] * total_ib_loss
+                batch_loss += total_loss_for_item
+
+            # --- End of batch loop ---
+
+            # Average the loss over the batch and backpropagate
+            if len(questions) > 0:
+                avg_batch_loss = batch_loss / len(questions)
+                avg_batch_loss.backward()
+                optimizer.step()
+
+                total_epoch_loss += avg_batch_loss.item()
+                total_epoch_reward += batch_reward
 
         avg_loss = total_epoch_loss / max(1, len(dataloader))
-        avg_reward = total_epoch_reward / max(1, len(dataloader))
-        logging.info(f"Epoch {epoch + 1} finished. Average Loss: {avg_loss:.4f}, Average Reward: {avg_reward:.4f}")
+        avg_reward = total_epoch_reward / max(1, len(dataset))  # Avg reward per sample
+        accuracy = epoch_correct_predictions / max(1, epoch_total_questions)
 
+        logging.info(
+            f"Epoch {epoch + 1} finished. "
+            f"Average Loss: {avg_loss:.4f}, "
+            f"Average Reward: {avg_reward:.4f}, "
+            f"Accuracy: {accuracy:.4f} ({epoch_correct_predictions}/{epoch_total_questions})"
+        )
         # Save the model periodically
         if (epoch + 1) % 5 == 0:
             os.makedirs(os.path.dirname(save_path), exist_ok=True)

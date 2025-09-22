@@ -10,11 +10,11 @@ agents:
   MathSolver:
     llm:
       model_name: qwen-max
-    prompt_set: mmlu
-  CodeWriter:
+    prompt_set: gsm8k
+  CodeWriting:
     llm:
       model_name: qwen-max
-    prompt_set: mmlu
+    prompt_set: humaneval
   AdversarialAgent:
     llm:
       model_name: qwen-max
@@ -50,6 +50,6 @@ training_params:
   # --- Training Process Parameters ---
   max_reasoning_steps: 5
   epochs: 20
-  batch_size: 1
+  batch_size: 8
   seed: 42
-  save_path: checkpoints/skm_manager_shapley.pth
+save_path: checkpoints/skm_manager_shapley.pth
