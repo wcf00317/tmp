@@ -9,23 +9,23 @@ embedding_model: sentence-transformers/all-MiniLM-L6-v2
 agents:
   MathSolver:
     llm:
-      model_name: qwen-max
+      model_name: qwen3-max-preview
     prompt_set: gsm8k
   CodeWriting:
     llm:
-      model_name: qwen-max
+      model_name: qwen3-max-preview
     prompt_set: humaneval
   AdversarialAgent:
     llm:
-      model_name: qwen-max
+      model_name: qwen3-max-preview
     prompt_set: mmlu
   AnalyzeAgent:
     llm:
-      model_name: qwen-max
+      model_name: qwen3-max-preview
     prompt_set: mmlu
   FinalMajorVote:
     llm:
-      model_name: qwen-max
+      model_name: qwen3-max-preview
     prompt_set: mmlu
 
 # --- NEW: Training and Model Hyperparameters ---

@@ -23,10 +23,10 @@ if not DASHSCOPE_BASE_URL:
     DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     print(f"Warning: DASHSCOPE_BASE_URL not found in qwen.env, using default: {DASHSCOPE_BASE_URL}")
 
-client = AsyncOpenAI(api_key=DASHSCOPE_API_KEY, base_url=DASHSCOPE_BASE_URL)
+client = AsyncOpenAI(api_key=DASHSCOPE_API_KEY, base_url=DASHSCOPE_BASE_URL,timeout=60.0, max_retries=10 )
 
 # --- API 调用函数 ---
-@retry(wait=wait_random_exponential(max=60), stop=stop_after_attempt(3))
+@retry(wait=wait_random_exponential(max=60), stop=stop_after_attempt(10))
 async def achat(
         model: str,
         msg: List[Dict],
@@ -37,14 +37,19 @@ async def achat(
     """
     使用 openai SDK 异步调用千问模型。
     """
-    completion = await client.chat.completions.create(
-        model=model,
-        messages=msg,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        n=num_comps,
-    )
-
+    try:
+        print(">>> 开始调用 Qwen API ...")
+        completion = await client.chat.completions.create(
+            model=model,
+            messages=msg,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            n=num_comps,
+        )
+        print(f"--- QWEN API RESPONSE ---\n{completion}\n-------------------------")
+    except Exception as e:
+        print(f"!!! Qwen API 调用失败: {repr(e)}")
+        raise
     if num_comps == 1:
         return completion.choices[0].message.content
     else:

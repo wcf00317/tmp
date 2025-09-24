@@ -22,6 +22,11 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from GDesigner.agents.agent_registry import AgentRegistry
 from datasets.mmlu_dataset import MMLUDataset  # Located in the top-level datasets directory
 from GDesigner.manager.manager import Manager  # Our new Manager
+# ===================== 修改开始 =====================
+# 导入用于评估的 Accuracy 类
+from experiments.accuracy import Accuracy
+# ===================== 修改结束 =====================
+
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -58,26 +63,35 @@ API_CACHE = load_cache()
 
 
 async def cached_async_execute(agent_to_call, input_dict, spatial_info, temporal_info):
-    """
-    一个包装了 _async_execute 的函数，它会根据任务字符串缓存结果。
-    """
     task_string = input_dict.get("task", "")
     cache_key = get_cache_key(task_string)
 
     if cache_key in API_CACHE:
-        # 返回缓存的响应
         return API_CACHE[cache_key]
     else:
-        # 调用实际的API并缓存结果
         response = await agent_to_call._async_execute(
             input=input_dict,
             spatial_info=spatial_info,
             temporal_info=temporal_info
         )
-        API_CACHE[cache_key] = response
-        # 每次新的API调用后都保存缓存，以防中断造成数据丢失
+
+        # 🟢 这里是关键：兼容 dict 和 ChatCompletion 对象
+        model_text = None
+        try:
+            if isinstance(response, dict):
+                model_text = response["choices"][0]["message"]["content"]
+            elif hasattr(response, "choices"):
+                model_text = response.choices[0].message.content
+            else:
+                model_text = str(response)
+        except Exception as e:
+            print("Failed to parse response:", e)
+            model_text = str(response)
+
+        API_CACHE[cache_key] = model_text
         save_cache()
-        return response
+        return model_text
+
 
 
 # --- Local Utility Function (as per original repo style) ---
@@ -209,6 +223,11 @@ def main():
     dataset_val = MMLUDataset(split='val')
     dataset = torch.utils.data.ConcatDataset([dataset_dev, dataset_val])
     logging.info(f"Successfully loaded dataset with {len(dataset)} samples.")
+    # ===================== 修改开始 =====================
+    # 实例化一个 MMLUDataset 对象，以便后续可以调用它的 postprocess_answer 方法
+    mmlu_eval_dataset = MMLUDataset(split='dev')
+    # ===================== 修改结束 =====================
+
 
     def mmlu_collate_fn(batch: List[pd.Series]):
         """
@@ -231,7 +250,6 @@ def main():
     )
 
     # --- 2. Training Loop ---
-    # --- 2. Training Loop ---
     for epoch in range(params['epochs']):
         total_epoch_loss = 0.0
         total_epoch_reward = 0.0
@@ -250,7 +268,7 @@ def main():
             for j in range(len(questions)):
                 question = questions[j]
                 choices = choices_list[j]
-                answer = answers[j]
+                answer = answers[j] # 'answer' a.k.a correct_answer
 
                 # Initialize state for the new question
                 state = torch.zeros(1, params['state_dim']).to(device)  # State for a single item
@@ -267,10 +285,8 @@ def main():
                     agent_id = action.item()  # action is now a single value
                     agent_name = agent_list[agent_id]
                     agent_config = config.get('agents', {}).get(agent_name, {})
-
                     llm_name = agent_config.get('llm', {}).get('model_name', "")
                     domain = agent_config.get('prompt_set', "")
-
                     agent_to_call = agent_registry.get(agent_name, domain=domain, llm_name=llm_name)
 
                     task_string = (
@@ -290,12 +306,13 @@ def main():
                         temporal_info={}
                     ))
 
-                    with torch.no_grad():
-                        raw_output_str = str(raw_output) if raw_output is not None else ""
-                        raw_output_embedding = embedding_model.encode(raw_output_str, convert_to_tensor=True)
-                        raw_output_embedding = raw_output_embedding.float().to(device).unsqueeze(
-                            0)  # Add batch dimension
+                    print(f"---------------------------\n{agent_name}\n{llm_name}\n{domain}\n{raw_output}\n----------------------------")
 
+
+                    with torch.no_grad():
+                        raw_output_str = raw_output or ""
+                        raw_output_embedding = embedding_model.encode(raw_output_str, convert_to_tensor=True)
+                        raw_output_embedding = raw_output_embedding.float().to(device).unsqueeze(0)
                     message_input = raw_output_embedding.clone()
                     message, ib_loss = manager.gateways[str(agent_id)](message_input)
 
@@ -311,8 +328,21 @@ def main():
 
                     state = state_updater(message.detach(), state.detach())
 
-                # Calculate final reward for this item
-                final_reward = 1.0 if answer in str(raw_output) else -1.0
+                # ===================== 修改开始: 全新的评估逻辑 =====================
+                # 1. 使用 MMLUDataset 的方法从原始输出中提取标准答案 (A, B, C, D)
+                processed_answer = mmlu_eval_dataset.postprocess_answer(raw_output)
+
+                # 2. 实例化 Accuracy 类
+                accuracy_checker = Accuracy()
+
+                # 3. 更新并获取准确率 (utility)
+                accuracy_checker.update(processed_answer, answer)
+                utility = accuracy_checker.get()  # 正确时为 1.0, 错误时为 0.0
+
+                # 4. 根据 utility 计算最终 reward
+                final_reward = 1.0 if utility == 1.0 else -1.0
+                # ===================== 修改结束 ===================================
+
                 rewards[-1] = final_reward
                 batch_reward += final_reward
                 is_correct = (final_reward == 1.0)
@@ -321,9 +351,11 @@ def main():
                 epoch_total_questions += 1
 
                 # (可选) 如果你想看每一道题的结果，取消下面这几行的注释
-                print(f"\n--- Question {epoch_total_questions}  : {'CORRECT' if is_correct else 'WRONG'}---")
-                # print(f"Result: {'CORRECT' if is_correct else 'WRONG'}")
+                print(f"\n--- Question {epoch_total_questions} : {'CORRECT' if is_correct else 'WRONG'} ---")
+                print(f"Model Raw Output: {raw_output}")
+                print(f"Processed Answer: {processed_answer}, Correct Answer: {answer}")
                 # print(f"----------------\n")
+
                 # Calculate returns for this item
                 returns = []
                 R = 0
