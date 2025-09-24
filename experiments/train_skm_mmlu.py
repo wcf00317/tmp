@@ -275,6 +275,7 @@ def main():
                 messages, log_probs, q_values, advantages, ib_losses, rewards = {}, [], [], [], [], []
 
                 raw_output = None  # Ensure raw_output is defined
+                reasoning_history = {}
 
                 # Multi-step reasoning process for a single question
                 for step in range(params['max_reasoning_steps']):
@@ -302,7 +303,7 @@ def main():
                     raw_output = asyncio.run(cached_async_execute(
                         agent_to_call,
                         input_dict=input_dict,
-                        spatial_info={},
+                        spatial_info=reasoning_history,
                         temporal_info={}
                     ))
 
@@ -328,7 +329,7 @@ def main():
 
                     state = state_updater(message.detach(), state.detach())
 
-                # ===================== 修改开始: 全新的评估逻辑 =====================
+                # ===================== 修改开始: 全新的评估逻辑 ======================
                 # 1. 使用 MMLUDataset 的方法从原始输出中提取标准答案 (A, B, C, D)
                 processed_answer = mmlu_eval_dataset.postprocess_answer(raw_output)
 
